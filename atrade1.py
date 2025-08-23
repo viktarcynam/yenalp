@@ -277,10 +277,13 @@ def poll_order_status(client, order_to_monitor):
                     non_replaceable_statuses = ['accepted', 'pending_new', 'pending_cancel', 'pending_replace', 'filled', 'canceled', 'expired', 'rejected']
 
                     if current_status in non_replaceable_statuses:
-                        # Implement Cancel-and-Replace
-                        confirm = input(f"\nOrder status is '{current_status}'. Cannot modify. Cancel and replace with new price? (y/n): ").lower()
-                        if confirm == 'y':
-                            new_price_str = input("Enter new limit price: ")
+                        # Implement streamlined Cancel-and-Replace
+                        print(f"\nOrder status is '{current_status}'. To adjust, will perform cancel-and-replace.")
+                        new_price_str = input("Enter new limit price (or 'q' to cancel adjustment): ").lower()
+
+                        if new_price_str == 'q':
+                            print("Adjustment cancelled.")
+                        else:
                             try:
                                 new_price = float(new_price_str)
                                 print("Canceling original order...")
@@ -289,7 +292,6 @@ def poll_order_status(client, order_to_monitor):
                                     print(f"Failed to cancel order: {cancel_response.get('error')}")
                                     continue
 
-                                # Wait for cancellation confirmation
                                 print("Waiting for cancellation confirmation...")
                                 while True:
                                     check_status_res = client.get_order(order_id)
@@ -298,7 +300,6 @@ def poll_order_status(client, order_to_monitor):
                                         break
                                     time.sleep(1)
 
-                                # Place new order
                                 print("Placing new order...")
                                 new_order_response = client.place_order(
                                     symbol=order_to_monitor["symbol"],
@@ -312,7 +313,6 @@ def poll_order_status(client, order_to_monitor):
                                 if new_order_response.get("success"):
                                     new_order_id = new_order_response["data"].get("id")
                                     print(f"New order placed successfully. New Order ID: {new_order_id}")
-                                    # Update the variables to monitor the new order
                                     order_id = new_order_id
                                     order_to_monitor["id"] = new_order_id
                                     order_to_monitor["price"] = new_price
@@ -321,8 +321,6 @@ def poll_order_status(client, order_to_monitor):
 
                             except ValueError:
                                 print("Invalid price.")
-                        else:
-                            print("Replacement aborted.")
                     else:
                         # Standard Replace
                         new_price_str = input("\nEnter new limit price: ")
