@@ -210,33 +210,28 @@ def find_and_adopt_orphaned_order(client, symbol_input):
         print("No working orders found for this symbol.")
         return False
 
+    print("\n--- Found Orphaned Order(s)! ---")
+    for i, order in enumerate(working_orders):
+        print(f"  {i+1}. {order['symbol']} | {order['side']} {order['qty']} @ {order['limit_price']} | Status: {order['status']}")
+
     orphaned_order = None
     if len(working_orders) == 1:
-        orphaned_order = working_orders[0]
-        print("\n--- Orphaned Order Found! ---")
-        print(f"  ID: {orphaned_order['id']}")
-        print(f"  Symbol: {orphaned_order['symbol']}")
-        print(f"  Side: {orphaned_order['side']}, Qty: {orphaned_order['qty']}")
-        print(f"  Price: {orphaned_order['limit_price']}")
-        print(f"  Status: {orphaned_order['status']}")
-        adopt = input("Do you want to adopt and monitor this order? (y/n): ").lower()
-        if adopt != 'y':
-            return False # User chose not to adopt
+        adopt_choice = input("Do you want to adopt and monitor this order? (y/n): ").lower()
+        if adopt_choice == 'y':
+            orphaned_order = working_orders[0]
     else:
-        print("\n--- Multiple Orphaned Orders Found! ---")
-        for i, order in enumerate(working_orders):
-            print(f"  {i+1}. {order['symbol']} | {order['side']} {order['qty']} @ {order['limit_price']} | Status: {order['status']}")
-
         try:
             choice = int(input("Select an order to adopt (or 0 to skip): "))
-            if choice == 0:
-                return False
-            orphaned_order = working_orders[choice - 1]
+            if choice > 0:
+                orphaned_order = working_orders[choice - 1]
         except (ValueError, IndexError):
             print("Invalid selection.")
             return False
 
-    adopt = 'y' # Implicitly yes if they selected a number > 0
+    if not orphaned_order:
+        return False # User chose not to adopt
+
+    adopt = 'y'
     if adopt == 'y':
         position_intent = "close" if "close" in orphaned_order.get("position_intent", "") else "open"
 
