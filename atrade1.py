@@ -182,8 +182,9 @@ def create_occ_symbol(underlying, expiry_date, option_type, strike):
     return f"{underlying.upper()}{expiry}{opt_type}{strike_price_formatted}"
 
 # Main application logic
-def poll_order_status(client, order_id):
+def poll_order_status(client, order_to_monitor):
     """Polls an order's status and allows for adjustment or cancellation."""
+    order_id = order_to_monitor["id"]
     old_settings = termios.tcgetattr(sys.stdin)
     try:
         tty.setcbreak(sys.stdin.fileno())
@@ -208,29 +209,74 @@ def poll_order_status(client, order_id):
                     tty.setcbreak(sys.stdin.fileno()) # Go back to listening
 
                 elif char.upper() == 'A':
-                    # First, get the current status to see if it's replaceable
+                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+
                     current_order_response = client.get_order(order_id)
                     current_status = current_order_response.get("data", {}).get("status")
-
-                    # From Alpaca Docs: Order cannot be replaced when the status is 'accepted', 'pending_new', etc.
                     non_replaceable_statuses = ['accepted', 'pending_new', 'pending_cancel', 'pending_replace', 'filled', 'canceled', 'expired', 'rejected']
 
                     if current_status in non_replaceable_statuses:
-                        print(f"\nOrder status is '{current_status}' and cannot be adjusted. Please wait.")
-                        # No need to switch terminal modes as we didn't ask for input
+                        # Implement Cancel-and-Replace
+                        confirm = input(f"\nOrder status is '{current_status}'. Cannot modify. Cancel and replace with new price? (y/n): ").lower()
+                        if confirm == 'y':
+                            new_price_str = input("Enter new limit price: ")
+                            try:
+                                new_price = float(new_price_str)
+                                print("Canceling original order...")
+                                cancel_response = client.cancel_order(order_id)
+                                if not cancel_response.get("success"):
+                                    print(f"Failed to cancel order: {cancel_response.get('error')}")
+                                    continue
+
+                                # Wait for cancellation confirmation
+                                print("Waiting for cancellation confirmation...")
+                                while True:
+                                    check_status_res = client.get_order(order_id)
+                                    if check_status_res.get("data", {}).get("status") == "canceled":
+                                        print("Cancellation confirmed.")
+                                        break
+                                    time.sleep(1)
+
+                                # Place new order
+                                print("Placing new order...")
+                                new_order_response = client.place_order(
+                                    symbol=order_to_monitor["symbol"],
+                                    qty=order_to_monitor["quantity"],
+                                    side=order_to_monitor["side"],
+                                    order_type="limit",
+                                    time_in_force="day",
+                                    limit_price=new_price
+                                )
+
+                                if new_order_response.get("success"):
+                                    new_order_id = new_order_response["data"].get("id")
+                                    print(f"New order placed successfully. New Order ID: {new_order_id}")
+                                    # Update the variables to monitor the new order
+                                    order_id = new_order_id
+                                    order_to_monitor["id"] = new_order_id
+                                    order_to_monitor["price"] = new_price
+                                else:
+                                    print(f"Failed to place new order: {new_order_response.get('error')}")
+
+                            except ValueError:
+                                print("Invalid price.")
+                        else:
+                            print("Replacement aborted.")
                     else:
-                        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+                        # Standard Replace
                         new_price_str = input("\nEnter new limit price: ")
                         try:
                             new_price = float(new_price_str)
                             replace_response = client.replace_order(order_id, limit_price=new_price)
                             if replace_response.get("success"):
                                 print("Order replaced successfully.")
+                                order_to_monitor["price"] = new_price
                             else:
                                 print(f"Failed to replace order: {replace_response.get('error')}")
                         except ValueError:
                             print("Invalid price.")
-                        tty.setcbreak(sys.stdin.fileno()) # Go back to listening
+
+                    tty.setcbreak(sys.stdin.fileno()) # Go back to listening
 
 
             # Check order status
@@ -278,7 +324,16 @@ def place_and_monitor_order(client, occ_symbol, quantity, action, price, positio
     order_id = order_response["data"].get("id")
     print(f"Order placed successfully. Order ID: {order_id}")
 
-    status = poll_order_status(client, order_id)
+    order_to_monitor = {
+        "id": order_id,
+        "symbol": occ_symbol,
+        "quantity": quantity,
+        "side": side,
+        "action": action, # 'B' or 'S'
+        "price": price
+    }
+
+    status = poll_order_status(client, order_to_monitor)
 
     # --- Round-trip logic ---
     if status == "FILLED" and position_intent == "open":
