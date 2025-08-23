@@ -388,31 +388,35 @@ def poll_order_status(client, order_to_monitor):
 
             # Get live quote for periodic display
             parsed_symbol = parse_occ_symbol(order_to_monitor['symbol'])
-            underlying = parsed_symbol['underlying']
-            strike = parsed_symbol['strike_price']
+            if parsed_symbol:
+                underlying = parsed_symbol['underlying']
+                strike = parsed_symbol['strike_price']
 
-            chain_response = client.get_option_chain(underlying)
-            snapshots = chain_response.get("data", {}).get("snapshots", {})
+                chain_response = client.get_option_chain(underlying)
+                snapshots = chain_response.get("data", {}).get("snapshots", {})
 
-            call_symbol_to_find = create_occ_symbol(underlying, parsed_symbol['expiration_date'], 'C', strike)
-            put_symbol_to_find = create_occ_symbol(underlying, parsed_symbol['expiration_date'], 'P', strike)
+                call_symbol_to_find = create_occ_symbol(underlying, parsed_symbol['expiration_date'], 'C', strike)
+                put_symbol_to_find = create_occ_symbol(underlying, parsed_symbol['expiration_date'], 'P', strike)
 
-            call_quote = snapshots.get(call_symbol_to_find, {}).get("latestQuote", {})
-            put_quote = snapshots.get(put_symbol_to_find, {}).get("latestQuote", {})
+                call_quote = snapshots.get(call_symbol_to_find, {}).get("latestQuote", {})
+                put_quote = snapshots.get(put_symbol_to_find, {}).get("latestQuote", {})
 
-            order_type_str = parsed_symbol['type'].capitalize()
+                order_type_str = parsed_symbol['type'].capitalize()
 
-            elapsed_seconds = int(time.time() - start_time)
-            mins, secs = divmod(elapsed_seconds, 60)
-            elapsed_str = f"{mins}m{secs}s" if mins > 0 else f"{secs}s"
+                elapsed_seconds = int(time.time() - start_time)
+                mins, secs = divmod(elapsed_seconds, 60)
+                elapsed_str = f"{mins}m{secs}s" if mins > 0 else f"{secs}s"
 
-            display_line = (
-                f"\r{status.capitalize()} {elapsed_str} : {underlying} {order_to_monitor['side'].capitalize()} {order_to_monitor['quantity']} "
-                f"{order_type_str} {strike:.2f} @{order_to_monitor['price']:.2f}   "
-                f"CALL {call_quote.get('bp', 0):.2f} / {call_quote.get('ap', 0):.2f}   "
-                f"PUT {put_quote.get('bp', 0):.2f} / {put_quote.get('ap', 0):.2f}"
-            )
-            print(display_line, end=" " * 10) # Padding to clear previous line
+                display_line = (
+                    f"\r{status.capitalize()} {elapsed_str}: "
+                    f"{underlying} {order_to_monitor['side'].capitalize()} {order_to_monitor['quantity']} "
+                    f"{order_type_str} {strike:.2f} @{order_to_monitor['price']:.2f} | "
+                    f"CALL: {call_quote.get('bp', 0):.2f} / {call_quote.get('ap', 0):.2f} | "
+                    f"PUT: {put_quote.get('bp', 0):.2f} / {put_quote.get('ap', 0):.2f}"
+                )
+                print(display_line, end=" " * 15) # Padding to clear previous line
+            else:
+                print(f"\rStatus: {status.upper()}", end="")
 
             if status == "filled":
                 print("\nOrder Filled!")
@@ -517,7 +521,15 @@ def place_and_monitor_order(client, occ_symbol, quantity, action, price, positio
         closing_order_id = closing_order_response["data"].get("id")
         print(f"Closing order placed successfully. Order ID: {closing_order_id}")
 
-        poll_order_status(client, closing_order_id)
+        closing_order_to_monitor = {
+            "id": closing_order_id,
+            "symbol": occ_symbol,
+            "quantity": quantity,
+            "side": closing_side,
+            "action": closing_action,
+            "price": closing_price
+        }
+        poll_order_status(client, closing_order_to_monitor)
 
 
 def atrade1_main():
