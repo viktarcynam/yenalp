@@ -209,7 +209,7 @@ def poll_order_status(client, order_id):
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
 
-def place_and_monitor_order(client, occ_symbol, quantity, action, price):
+def place_and_monitor_order(client, occ_symbol, quantity, action, price, position_intent):
     """Places an order and then monitors it."""
     side = "buy" if action == 'B' else "sell"
 
@@ -231,7 +231,66 @@ def place_and_monitor_order(client, occ_symbol, quantity, action, price):
     order_id = order_response["data"].get("id")
     print(f"Order placed successfully. Order ID: {order_id}")
 
-    poll_order_status(client, order_id)
+    status = poll_order_status(client, order_id)
+
+    # --- Round-trip logic ---
+    if status == "FILLED" and position_intent == "open":
+        print("\n--- Place Closing Order ---")
+
+        # We need the underlying symbol from the OCC symbol to get the chain
+        # Simple parsing: find the first digit
+        underlying_symbol = ""
+        for char in occ_symbol:
+            if char.isdigit():
+                break
+            underlying_symbol += char
+
+        chain_response = client.get_option_chain(underlying_symbol)
+        if not chain_response.get("success"):
+            print("Could not get latest chain to suggest a closing price. Aborting.")
+            return
+
+        snapshots = chain_response.get("data", {})
+        target_snapshot = snapshots.get(occ_symbol)
+        if not target_snapshot or not target_snapshot.get("quote"):
+             print("Could not get latest quote to suggest a closing price. Aborting.")
+             return
+
+        closing_quote = target_snapshot["quote"]
+        print(f"Latest quote for {occ_symbol}: Bid: {closing_quote['bp']:.2f}, Ask: {closing_quote['ap']:.2f}")
+
+        try:
+            closing_price_str = input("Enter limit price for closing order (or 's' to skip): ")
+            if closing_price_str.lower() == 's':
+                print("Skipping closing order.")
+                return
+            closing_price = float(closing_price_str)
+        except ValueError:
+            print("Invalid price. Aborting closing order.")
+            return
+
+        closing_action = 'S' if action == 'B' else 'B'
+        closing_side = "sell" if closing_action == 'S' else "buy"
+
+        print(f"\nPlacing closing order: {closing_action} {quantity} {occ_symbol} @ {closing_price:.2f}")
+
+        closing_order_response = client.place_order(
+            symbol=occ_symbol,
+            qty=quantity,
+            side=closing_side,
+            order_type="limit",
+            time_in_force="day",
+            limit_price=closing_price
+        )
+
+        if not closing_order_response.get("success"):
+            print(f"Failed to place closing order: {closing_order_response.get('error')}")
+            return
+
+        closing_order_id = closing_order_response["data"].get("id")
+        print(f"Closing order placed successfully. Order ID: {closing_order_id}")
+
+        poll_order_status(client, closing_order_id)
 
 
 def atrade1_main():
@@ -385,9 +444,26 @@ def atrade1_main():
                 continue
 
             occ_symbol = create_occ_symbol(symbol_input, selected_expiry, option_type_in, strike_price)
+            if not occ_symbol:
+                continue # Error was already printed by the helper function
 
-            print("Price is valid.")
-            place_and_monitor_order(client, occ_symbol, quantity, action, price)
+            # 7. Determine Position Intent
+            current_position_qty = 0
+            all_positions = client.get_positions()
+            if all_positions.get("success"):
+                for pos in all_positions.get("data", []):
+                    if pos.get("symbol") == occ_symbol:
+                        current_position_qty = float(pos.get("qty", 0))
+                        break
+
+            position_intent = "open" # Default to open
+            if action == 'B' and current_position_qty < 0:
+                position_intent = "close"
+            elif action == 'S' and current_position_qty > 0:
+                position_intent = "close"
+
+            print(f"Price is valid. Position intent: {position_intent}")
+            place_and_monitor_order(client, occ_symbol, quantity, action, price, position_intent)
 
 
         except KeyboardInterrupt:
