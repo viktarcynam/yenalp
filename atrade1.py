@@ -118,6 +118,41 @@ class AlpacaClient:
         return self.get(f"/options/snapshots/{underlying_symbol}", base_url_override=self.data_v1beta1_url)
 
 # Helper functions
+def parse_occ_symbol(symbol):
+    """
+    Parses an OCC-formatted option symbol.
+    Example: HOG250829C00027000 -> {underlying: HOG, expiry: 2025-08-29, type: call, strike: 27.0}
+    """
+    # Find the split point between the underlying symbol and the date
+    for i, char in enumerate(symbol):
+        if char.isdigit():
+            underlying = symbol[:i]
+            rest = symbol[i:]
+            break
+    else:
+        return None # No digits found
+
+    try:
+        # Extract date, type, and strike
+        expiry_str = rest[:6]
+        option_type = rest[6]
+        strike_price_str = rest[7:]
+
+        # Format parts
+        expiry = datetime.datetime.strptime(expiry_str, "%y%m%d").strftime("%Y-%m-%d")
+        option_type_full = "call" if option_type == 'C' else "put"
+        strike_price = float(strike_price_str) / 1000.0
+
+        return {
+            "underlying": underlying,
+            "expiration_date": expiry,
+            "type": option_type_full,
+            "strike_price": strike_price
+        }
+    except (ValueError, IndexError):
+        return None
+
+
 def create_occ_symbol(underlying, expiry_date, option_type, strike):
     """
     Creates an OCC-formatted option symbol.
@@ -352,13 +387,24 @@ def atrade1_main():
                 print(f"Error getting option chain: {chain_response.get('error')}")
                 continue
 
-            snapshots = chain_response.get("data", {})
+            snapshots = chain_response.get("data", {}).get("snapshots", {})
             if not snapshots:
                 print("No option chain found for this symbol.")
                 continue
 
-            # Extract unique expiration dates
-            expirations = sorted(list(set([details["greeks"]["expire_date"] for symbol, details in snapshots.items()])))
+            # Parse all symbols to extract details
+            parsed_contracts = {}
+            for symbol, details in snapshots.items():
+                parsed = parse_occ_symbol(symbol)
+                if parsed:
+                    parsed_contracts[symbol] = parsed
+
+            # Extract unique expiration dates from parsed data
+            expirations = sorted(list(set([p["expiration_date"] for p in parsed_contracts.values()])))
+            if not expirations:
+                print("Could not parse any valid expiration dates.")
+                continue
+
             print("\nAvailable expiration dates:")
             for i, exp_date in enumerate(expirations):
                 print(f"  {i+1}. {exp_date}")
@@ -370,41 +416,34 @@ def atrade1_main():
                 print("Invalid selection.")
                 continue
 
-            # Filter chain for selected expiry and display strikes
-            print(f"\n--- Option Chain for {selected_expiry} ---")
+            # Filter contracts for the selected expiry
+            contracts_for_expiry = {s: p for s, p in parsed_contracts.items() if p["expiration_date"] == selected_expiry}
 
             # Separate calls and puts
-            calls = {}
-            puts = {}
-            for symbol, details in snapshots.items():
-                if details["greeks"]["expire_date"] == selected_expiry:
-                    strike_price = float(details["strike_price"])
-                    if details["type"] == "call":
-                        calls[strike_price] = details
-                    else:
-                        puts[strike_price] = details
+            calls = {p["strike_price"]: s for s, p in contracts_for_expiry.items() if p["type"] == "call"}
+            puts = {p["strike_price"]: s for s, p in contracts_for_expiry.items() if p["type"] == "put"}
 
             sorted_strikes = sorted(calls.keys() | puts.keys())
 
+            print(f"\n--- Option Chain for {selected_expiry} ---")
             print("STRIKE   |   CALL (BID/ASK)   |   PUT (BID/ASK)")
             print("-------- | -------------------- | ------------------")
 
-            # Get a few strikes around the money
             num_strikes_to_show = 5
             try:
-                # Find the strike closest to the last stock price
                 closest_strike_index = min(range(len(sorted_strikes)), key=lambda i: abs(sorted_strikes[i] - last_price))
                 start_index = max(0, closest_strike_index - num_strikes_to_show)
                 end_index = min(len(sorted_strikes), closest_strike_index + num_strikes_to_show + 1)
                 strikes_to_display = sorted_strikes[start_index:end_index]
             except (ValueError, IndexError):
-                # Fallback to just showing the first few if price is weird
                 strikes_to_display = sorted_strikes[:10]
 
-
             for strike in strikes_to_display:
-                call_quote = calls.get(strike, {}).get("quote", {})
-                put_quote = puts.get(strike, {}).get("quote", {})
+                call_symbol = calls.get(strike)
+                put_symbol = puts.get(strike)
+
+                call_quote = snapshots.get(call_symbol, {}).get("latestQuote", {}) if call_symbol else {}
+                put_quote = snapshots.get(put_symbol, {}).get("latestQuote", {}) if put_symbol else {}
 
                 call_str = f"{call_quote.get('bp', 0):.2f}/{call_quote.get('ap', 0):.2f}".center(20)
                 put_str = f"{put_quote.get('bp', 0):.2f}/{put_quote.get('ap', 0):.2f}".center(18)
@@ -423,22 +462,29 @@ def atrade1_main():
             if len(parts) == 5:
                 quantity = int(parts[4])
 
-            strike_price = float(strike_str)
-            price = float(price_str)
+            try:
+                strike_price = float(strike_str)
+                price = float(price_str)
+            except ValueError:
+                print("Invalid number format for strike or price.")
+                continue
 
             # 6. Validate price against quote from snapshot
-            chain_for_type = calls if option_type_in == 'C' else puts
-            target_snapshot = chain_for_type.get(strike_price)
+            target_symbol = None
+            if option_type_in == 'C':
+                target_symbol = calls.get(strike_price)
+            else:
+                target_symbol = puts.get(strike_price)
 
-            if not target_snapshot:
+            if not target_symbol:
                 print("Invalid strike price selected.")
                 continue
 
-            live_quote = target_snapshot.get("quote", {})
+            live_quote = snapshots.get(target_symbol, {}).get("latestQuote", {})
             market_bid = live_quote.get("bp", 0)
             market_ask = live_quote.get("ap", 0)
 
-            if market_ask == 0 and action == 'B': # No liquidity, can't place a buy order
+            if market_ask == 0 and action == 'B':
                  print("No ask price available for this contract. Cannot place buy order.")
                  continue
 
@@ -450,27 +496,23 @@ def atrade1_main():
                 print(f"Invalid price for sell order. Price ({price:.2f}) cannot be lower than bid ({market_bid:.2f}).")
                 continue
 
-            occ_symbol = create_occ_symbol(symbol_input, selected_expiry, option_type_in, strike_price)
-            if not occ_symbol:
-                continue # Error was already printed by the helper function
-
             # 7. Determine Position Intent
             current_position_qty = 0
             all_positions = client.get_positions()
             if all_positions.get("success"):
                 for pos in all_positions.get("data", []):
-                    if pos.get("symbol") == occ_symbol:
+                    if pos.get("symbol") == target_symbol:
                         current_position_qty = float(pos.get("qty", 0))
                         break
 
-            position_intent = "open" # Default to open
+            position_intent = "open"
             if action == 'B' and current_position_qty < 0:
                 position_intent = "close"
             elif action == 'S' and current_position_qty > 0:
                 position_intent = "close"
 
             print(f"Price is valid. Position intent: {position_intent}")
-            place_and_monitor_order(client, occ_symbol, quantity, action, price, position_intent)
+            place_and_monitor_order(client, target_symbol, quantity, action, price, position_intent)
 
 
         except KeyboardInterrupt:
