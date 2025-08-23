@@ -450,23 +450,34 @@ def atrade1_main():
 
                 print(f"{strike:<8.2f} | {call_str} | {put_str}")
 
-            # 5. Prompt for action
-            action_input = input("\nACTION - (B/S C/P STRIKE PRICE [QTY], e.g., B C 550 1.25 5): ").upper().strip()
+            # 5. Prompt for Strike Price
+            suggested_strike = strikes_to_display[len(strikes_to_display) // 2] # Default to the middle of the displayed strikes
+            strike_str = input(f"\nEnter strike price (default: {suggested_strike}): ")
+            if not strike_str:
+                strike_price = suggested_strike
+            else:
+                try:
+                    strike_price = float(strike_str)
+                except ValueError:
+                    print("Invalid strike price.")
+                    continue
+
+            # 6. Prompt for action
+            action_input = input("ACTION - (B/S C/P PRICE [QTY], e.g., B C 1.25 5): ").upper().strip()
             parts = action_input.split()
-            if len(parts) < 4 or len(parts) > 5:
-                print("Invalid action format. Use: B/S C/P STRIKE PRICE [QTY]")
+            if len(parts) < 3 or len(parts) > 4:
+                print("Invalid action format. Use: B/S C/P PRICE [QTY]")
                 continue
 
-            action, option_type_in, strike_str, price_str = parts[0], parts[1], parts[2], parts[3]
+            action, option_type_in, price_str = parts[0], parts[1], parts[2]
             quantity = 1
-            if len(parts) == 5:
-                quantity = int(parts[4])
+            if len(parts) == 4:
+                quantity = int(parts[3])
 
             try:
-                strike_price = float(strike_str)
                 price = float(price_str)
             except ValueError:
-                print("Invalid number format for strike or price.")
+                print("Invalid price format.")
                 continue
 
             # 6. Validate price against quote from snapshot
