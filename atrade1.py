@@ -382,7 +382,21 @@ def poll_order_status(client, order_to_monitor):
                 continue
 
             status = order_response["data"].get("status")
-            print(f"\rOrder Status: {status.upper()}", end="")
+
+            # Get live quote for periodic display
+            parsed_symbol = parse_occ_symbol(order_to_monitor['symbol'])
+            chain_response = client.get_option_chain(parsed_symbol['underlying'])
+            snapshots = chain_response.get("data", {}).get("snapshots", {})
+            live_quote = snapshots.get(order_to_monitor['symbol'], {}).get("latestQuote", {})
+            bid_price = live_quote.get('bp', 0)
+            ask_price = live_quote.get('ap', 0)
+
+            display_line = (
+                f"\rStatus: {status.upper()} | "
+                f"Order: {order_to_monitor['action']} {order_to_monitor['quantity']} @ {order_to_monitor['price']:.2f} | "
+                f"Market: {bid_price:.2f} / {ask_price:.2f}"
+            )
+            print(display_line, end=" " * 10) # Padding to clear previous line
 
             if status == "filled":
                 print("\nOrder Filled!")
@@ -391,7 +405,7 @@ def poll_order_status(client, order_to_monitor):
                 print(f"\nOrder is no longer active. Status: {status}")
                 return status.upper()
 
-            time.sleep(2)
+            time.sleep(3)
 
     finally:
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
