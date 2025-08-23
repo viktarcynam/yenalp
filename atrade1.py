@@ -473,15 +473,19 @@ def atrade1_main():
                 print("Could not parse any valid expiration dates.")
                 continue
 
-            print("\nAvailable expiration dates:")
-            for i, exp_date in enumerate(expirations):
-                print(f"  {i+1}. {exp_date}")
+            # Default to the soonest expiration date
+            default_expiry = expirations[0]
+            expiry_input = input(f"\nEnter expiration date (default: {default_expiry}): ")
 
-            try:
-                choice = int(input("Select an expiration date: ")) - 1
-                selected_expiry = expirations[choice]
-            except (ValueError, IndexError):
-                print("Invalid selection.")
+            if not expiry_input:
+                selected_expiry = default_expiry
+            else:
+                selected_expiry = expiry_input
+
+            if selected_expiry not in expirations:
+                print("Invalid date. Please choose a date from the available list:")
+                for exp_date in expirations:
+                    print(f" - {exp_date}")
                 continue
 
             # Filter contracts for the selected expiry
