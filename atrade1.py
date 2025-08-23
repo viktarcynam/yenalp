@@ -497,33 +497,10 @@ def atrade1_main():
 
             sorted_strikes = sorted(calls.keys() | puts.keys())
 
-            print(f"\n--- Option Chain for {selected_expiry} ---")
-            print("STRIKE   |   CALL (BID/ASK)   |   PUT (BID/ASK)")
-            print("-------- | -------------------- | ------------------")
-
-            num_strikes_to_show = 5
-            try:
-                closest_strike_index = min(range(len(sorted_strikes)), key=lambda i: abs(sorted_strikes[i] - last_price))
-                start_index = max(0, closest_strike_index - num_strikes_to_show)
-                end_index = min(len(sorted_strikes), closest_strike_index + num_strikes_to_show + 1)
-                strikes_to_display = sorted_strikes[start_index:end_index]
-            except (ValueError, IndexError):
-                strikes_to_display = sorted_strikes[:10]
-
-            for strike in strikes_to_display:
-                call_symbol = calls.get(strike)
-                put_symbol = puts.get(strike)
-
-                call_quote = snapshots.get(call_symbol, {}).get("latestQuote", {}) if call_symbol else {}
-                put_quote = snapshots.get(put_symbol, {}).get("latestQuote", {}) if put_symbol else {}
-
-                call_str = f"{call_quote.get('bp', 0):.2f}/{call_quote.get('ap', 0):.2f}".center(20)
-                put_str = f"{put_quote.get('bp', 0):.2f}/{put_quote.get('ap', 0):.2f}".center(18)
-
-                print(f"{strike:<8.2f} | {call_str} | {put_str}")
-
             # 5. Prompt for Strike Price
-            suggested_strike = strikes_to_display[len(strikes_to_display) // 2] # Default to the middle of the displayed strikes
+            suggested_strike_index = min(range(len(sorted_strikes)), key=lambda i: abs(sorted_strikes[i] - last_price))
+            suggested_strike = sorted_strikes[suggested_strike_index]
+
             strike_str = input(f"\nEnter strike price (default: {suggested_strike}): ")
             if not strike_str:
                 strike_price = suggested_strike
@@ -534,8 +511,35 @@ def atrade1_main():
                     print("Invalid strike price.")
                     continue
 
+            # Display the focused part of the chain
+            print(f"\n--- Option Chain for {selected_expiry} ---")
+            print("CALLS (BID / ASK)  |  STRIKE  |  PUTS (BID / ASK)")
+            print("------------------- | -------- | -----------------")
+
+            try:
+                selected_strike_index = sorted_strikes.index(strike_price)
+                start_index = max(0, selected_strike_index - 1)
+                end_index = min(len(sorted_strikes), selected_strike_index + 2)
+                strikes_to_display = sorted_strikes[start_index:end_index]
+            except ValueError:
+                print("Selected strike not found in the list.")
+                continue
+
+            for strike in strikes_to_display:
+                call_symbol = calls.get(strike)
+                put_symbol = puts.get(strike)
+
+                call_quote = snapshots.get(call_symbol, {}).get("latestQuote", {}) if call_symbol else {}
+                put_quote = snapshots.get(put_symbol, {}).get("latestQuote", {}) if put_symbol else {}
+
+                call_str = f"{call_quote.get('bp', 0):.2f} / {call_quote.get('ap', 0):.2f}".center(19)
+                put_str = f"{put_quote.get('bp', 0):.2f} / {put_quote.get('ap', 0):.2f}".center(17)
+
+                strike_display = f"{strike:.2f}".center(8)
+                print(f"{call_str} | {strike_display} | {put_str}")
+
             # 6. Prompt for action
-            action_input = input("ACTION - (B/S C/P PRICE [QTY], e.g., B C 1.25 5): ").upper().strip()
+            action_input = input("\nACTION - (B/S C/P PRICE [QTY], e.g., B C 1.25 5): ").upper().strip()
             parts = action_input.split()
             if len(parts) < 3 or len(parts) > 4:
                 print("Invalid action format. Use: B/S C/P PRICE [QTY]")
