@@ -259,6 +259,7 @@ def find_and_adopt_orphaned_order(client, symbol_input):
 def poll_order_status(client, order_to_monitor):
     """Polls an order's status and allows for adjustment or cancellation."""
     order_id = order_to_monitor["id"]
+    start_time = time.time()
     old_settings = termios.tcgetattr(sys.stdin)
     try:
         tty.setcbreak(sys.stdin.fileno())
@@ -338,6 +339,7 @@ def poll_order_status(client, order_to_monitor):
                                     order_id = new_order_id
                                     order_to_monitor["id"] = new_order_id
                                     order_to_monitor["price"] = new_price
+                                    start_time = time.time() # Reset timer
                                 else:
                                     print(f"Failed to place new order: {new_order_response.get('error')}")
 
@@ -366,6 +368,7 @@ def poll_order_status(client, order_to_monitor):
                                 if replace_response.get("success"):
                                     print("Order replaced successfully.")
                                     order_to_monitor["price"] = new_price
+                                start_time = time.time() # Reset timer
                                 else:
                                     print(f"Failed to replace order: {replace_response.get('error')}")
                             except ValueError:
@@ -391,7 +394,6 @@ def poll_order_status(client, order_to_monitor):
             chain_response = client.get_option_chain(underlying)
             snapshots = chain_response.get("data", {}).get("snapshots", {})
 
-            # Find call and put quotes for the same strike
             call_symbol_to_find = create_occ_symbol(underlying, parsed_symbol['expiration_date'], 'C', strike)
             put_symbol_to_find = create_occ_symbol(underlying, parsed_symbol['expiration_date'], 'P', strike)
 
@@ -400,13 +402,17 @@ def poll_order_status(client, order_to_monitor):
 
             order_type_str = parsed_symbol['type'].capitalize()
 
+            elapsed_seconds = int(time.time() - start_time)
+            mins, secs = divmod(elapsed_seconds, 60)
+            elapsed_str = f"{mins}m{secs}s" if mins > 0 else f"{secs}s"
+
             display_line = (
-                f"\r{status.capitalize()}: {underlying} {order_to_monitor['side'].capitalize()} {order_to_monitor['quantity']} "
+                f"\r{status.capitalize()} {elapsed_str} : {underlying} {order_to_monitor['side'].capitalize()} {order_to_monitor['quantity']} "
                 f"{order_type_str} {strike:.2f} @{order_to_monitor['price']:.2f}   "
                 f"CALL {call_quote.get('bp', 0):.2f} / {call_quote.get('ap', 0):.2f}   "
                 f"PUT {put_quote.get('bp', 0):.2f} / {put_quote.get('ap', 0):.2f}"
             )
-            print(display_line, end="." * 5)
+            print(display_line, end=" " * 10) # Padding to clear previous line
 
             if status == "filled":
                 print("\nOrder Filled!")
