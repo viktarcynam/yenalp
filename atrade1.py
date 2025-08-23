@@ -67,9 +67,9 @@ class AlpacaClient:
     def get_account(self):
         return self.get("/account")
 
-    def get_stock_quote(self, symbol):
+    def get_latest_stock_trade(self, symbol):
         # This uses the data URL for market data
-        return self.get(f"/stocks/{symbol}/quotes/latest", base_url_override=self.data_url)
+        return self.get(f"/stocks/{symbol}/trades/latest", base_url_override=self.data_url)
 
     def get_positions(self):
         return self.get("/positions")
@@ -359,13 +359,16 @@ def atrade1_main():
             if symbol_input in ['QUIT', 'Q']:
                 break
 
-            # 2. Get stock quote
-            quote_response = client.get_stock_quote(symbol_input)
-            if not quote_response.get("success"):
-                print(f"Error getting quote: {quote_response.get('error')}")
+            # 2. Get last trade price
+            trade_response = client.get_latest_stock_trade(symbol_input)
+            if not trade_response.get("success") or not trade_response.get("data", {}).get("trade"):
+                print(f"Error getting last trade for {symbol_input}: {trade_response.get('error', 'No trade data')}")
                 continue
 
-            last_price = quote_response["data"].get("quote", {}).get("ap") # Ask price as last price
+            last_price = trade_response["data"].get("trade", {}).get("p")
+            if last_price is None:
+                print(f"Could not determine last price for {symbol_input}.")
+                continue
             print(f"Last price for {symbol_input}: {last_price}")
 
             # 3. Get positions
