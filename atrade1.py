@@ -208,19 +208,29 @@ def poll_order_status(client, order_id):
                     tty.setcbreak(sys.stdin.fileno()) # Go back to listening
 
                 elif char.upper() == 'A':
-                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-                    new_price_str = input("\nEnter new limit price: ")
-                    try:
-                        new_price = float(new_price_str)
-                        replace_response = client.replace_order(order_id, limit_price=new_price)
-                        if replace_response.get("success"):
-                            print("Order replaced successfully.")
-                            # The new order will have the same ID
-                        else:
-                            print(f"Failed to replace order: {replace_response.get('error')}")
-                    except ValueError:
-                        print("Invalid price.")
-                    tty.setcbreak(sys.stdin.fileno()) # Go back to listening
+                    # First, get the current status to see if it's replaceable
+                    current_order_response = client.get_order(order_id)
+                    current_status = current_order_response.get("data", {}).get("status")
+
+                    # From Alpaca Docs: Order cannot be replaced when the status is 'accepted', 'pending_new', etc.
+                    non_replaceable_statuses = ['accepted', 'pending_new', 'pending_cancel', 'pending_replace', 'filled', 'canceled', 'expired', 'rejected']
+
+                    if current_status in non_replaceable_statuses:
+                        print(f"\nOrder status is '{current_status}' and cannot be adjusted. Please wait.")
+                        # No need to switch terminal modes as we didn't ask for input
+                    else:
+                        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+                        new_price_str = input("\nEnter new limit price: ")
+                        try:
+                            new_price = float(new_price_str)
+                            replace_response = client.replace_order(order_id, limit_price=new_price)
+                            if replace_response.get("success"):
+                                print("Order replaced successfully.")
+                            else:
+                                print(f"Failed to replace order: {replace_response.get('error')}")
+                        except ValueError:
+                            print("Invalid price.")
+                        tty.setcbreak(sys.stdin.fileno()) # Go back to listening
 
 
             # Check order status
