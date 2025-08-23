@@ -7,7 +7,6 @@ import sys
 import select
 import termios
 import tty
-import msgpack
 
 # Alpaca API client
 class AlpacaClient:
@@ -18,6 +17,7 @@ class AlpacaClient:
         self.base_url = "https://paper-api.alpaca.markets/v2" if paper else "https://api.alpaca.markets/v2"
         # Market data has a different URL structure
         self.data_url = "https://data.alpaca.markets/v2" # For stocks
+        self.data_v1beta1_url = "https://data.alpaca.markets/v1beta1" # For options snapshots
         self._session = requests.Session()
         self._session.headers.update({
             "APCA-API-KEY-ID": self.api_key,
@@ -112,94 +112,8 @@ class AlpacaClient:
     def get_order(self, order_id):
         return self.get(f"/orders/{order_id}")
 
-import websocket
-
-# Websocket client for real-time option data
-class WebsocketClient(threading.Thread):
-    def __init__(self, api_key, secret_key, paper=True):
-        super().__init__()
-        self.daemon = True  # Allows main thread to exit even if this thread is running
-        self.api_key = api_key
-        self.secret_key = secret_key
-        self.ws_url = "wss://stream.data.sandbox.alpaca.markets/v1beta1/options" if paper else "wss://stream.data.alpaca.markets/v1beta1/options"
-        self.ws = None
-        self.quotes = {}
-        self.lock = threading.Lock()
-        self._subscriptions = set()
-
-    def run(self):
-        self.ws = websocket.WebSocketApp(
-            self.ws_url,
-            on_message=self._on_message,
-            on_error=self._on_error,
-            on_close=self._on_close,
-            on_open=self._on_open
-        )
-        self.ws.run_forever()
-
-    def _on_open(self, ws):
-        print("Websocket opened.")
-        auth_message = {
-            "action": "auth",
-            "key": self.api_key,
-            "secret": self.secret_key
-        }
-        ws.send(json.dumps(auth_message))
-
-    def _on_message(self, ws, message):
-        try:
-            unpacked_message = msgpack.unpackb(message)
-
-            for item in unpacked_message:
-                msg_type = item.get("T")
-                if msg_type == "success" and item.get("msg") == "authenticated":
-                    print("Websocket authenticated.")
-                    # Resubscribe to any symbols that were requested before connection
-                    self.subscribe(list(self._subscriptions))
-                elif msg_type == "subscription":
-                     print(f"Subscription confirmation: {item}")
-                elif msg_type == "q":  # It's a quote
-                    symbol = item.get("S")
-                    with self.lock:
-                        self.quotes[symbol] = {
-                            "bid": item.get("bp"),
-                            "ask": item.get("ap"),
-                            "timestamp": item.get("t")
-                        }
-                elif msg_type == "error":
-                    print(f"Websocket error message: {item}")
-
-        except Exception as e:
-            print(f"Error processing websocket message: {e}")
-
-
-    def _on_error(self, ws, error):
-        print(f"Websocket error: {error}")
-
-    def _on_close(self, ws, close_status_code, close_msg):
-        print("Websocket closed.")
-
-    def subscribe(self, symbols):
-        if not isinstance(symbols, list):
-            symbols = [symbols]
-
-        new_symbols = [s for s in symbols if s not in self._subscriptions]
-        if not new_symbols:
-            return
-
-        self._subscriptions.update(new_symbols)
-
-        if self.ws and self.ws.sock and self.ws.sock.connected:
-            subscription_message = {
-                "action": "subscribe",
-                "quotes": new_symbols
-            }
-            self.ws.send(json.dumps(subscription_message))
-            print(f"Subscribed to quotes for: {new_symbols}")
-
-    def get_quote(self, symbol):
-        with self.lock:
-            return self.quotes.get(symbol)
+    def get_option_chain(self, underlying_symbol):
+        return self.get(f"/options/snapshots/{underlying_symbol}", base_url_override=self.data_v1beta1_url)
 
 # Helper functions
 def create_occ_symbol(underlying, expiry_date, option_type, strike):
@@ -328,11 +242,6 @@ def atrade1_main():
     api_key = input("Enter your Alpaca API Key ID: ")
     secret_key = input("Enter your Alpaca Secret Key: ")
 
-    print("\nStarting websocket client...")
-    websocket_client = WebsocketClient(api_key, secret_key)
-    websocket_client.start()
-    time.sleep(2) # Give the websocket time to connect and authenticate
-
     client = AlpacaClient(api_key, secret_key)
 
     # 1. Verify connection by getting account info
@@ -371,98 +280,101 @@ def atrade1_main():
                 else:
                     print(f"No positions found for {symbol_input}.")
 
-            # 4. Get option contracts (simplified flow)
-            expiry_date_str = input("Enter option expiry date (YYYY-MM-DD): ")
-            contracts_response = client.get_option_contracts(symbol_input, expiration_date=expiry_date_str)
-
-            if not contracts_response.get("success"):
-                print(f"Error getting option contracts: {contracts_response.get('error')}")
+            # 4. Get option chain
+            chain_response = client.get_option_chain(symbol_input)
+            if not chain_response.get("success"):
+                print(f"Error getting option chain: {chain_response.get('error')}")
                 continue
 
-            contracts = contracts_response.get("data", {}).get("option_contracts", [])
-            if not contracts:
-                print("No option contracts found for the specified symbol and expiry.")
+            snapshots = chain_response.get("data", {})
+            if not snapshots:
+                print("No option chain found for this symbol.")
                 continue
 
-            # 5. Subscribe to quotes and display them
-            contract_symbols = [c.get("symbol") for c in contracts]
-            websocket_client.subscribe(contract_symbols)
-
-            print("\nFetching real-time quotes...")
-            time.sleep(1.5) # Wait for quotes to come in
-
-            print("\n--- Option Chain (First 10 Contracts) ---")
-            for contract in contracts[:10]:
-                occ_symbol = contract.get("symbol")
-                quote = websocket_client.get_quote(occ_symbol)
-
-                type = contract.get('type')
-                strike = contract.get('strike_price')
-
-                if quote:
-                    print(f"  {type.upper()} {strike} | Bid: {quote.get('bid'):.2f}, Ask: {quote.get('ask'):.2f}  ({occ_symbol})")
-                else:
-                    print(f"  {type.upper()} {strike} | No quote available.  ({occ_symbol})")
-
-
-            # 6. Prompt for action
-            action_input = input("ACTION - (B/S C/P PRICE [QTY], e.g., B C 1.25 5): ").upper().strip()
-            parts = action_input.split()
-            if len(parts) < 3 or len(parts) > 4:
-                print("Invalid action format. Use: B/S C/P PRICE [QTY]")
-                continue
-
-            action, option_type_in, price_str = parts[0], parts[1], parts[2]
-            quantity = 1
-            if len(parts) == 4:
-                try:
-                    quantity = int(parts[3])
-                except ValueError:
-                    print("Invalid quantity. Must be an integer.")
-                    continue
-
-            if action not in ['B', 'S'] or option_type_in not in ['C', 'P']:
-                print("Invalid action or option type.")
-                continue
+            # Extract unique expiration dates
+            expirations = sorted(list(set([details["greeks"]["expire_date"] for symbol, details in snapshots.items()])))
+            print("\nAvailable expiration dates:")
+            for i, exp_date in enumerate(expirations):
+                print(f"  {i+1}. {exp_date}")
 
             try:
-                price = float(price_str)
-            except ValueError:
-                print("Invalid price.")
+                choice = int(input("Select an expiration date: ")) - 1
+                selected_expiry = expirations[choice]
+            except (ValueError, IndexError):
+                print("Invalid selection.")
                 continue
 
-            # Find the specific contract the user wants to trade
-            # For simplicity, we'll find the closest strike to the last price
-            # A more robust implementation would let the user select from the list
-            last_price = client.get_stock_quote(symbol_input)["data"].get("quote", {}).get("ap")
+            # Filter chain for selected expiry and display strikes
+            print(f"\n--- Option Chain for {selected_expiry} ---")
 
-            def get_nearest_strike(price):
-                return round(price / 5) * 5 # Simple logic, can be improved
+            # Separate calls and puts
+            calls = {}
+            puts = {}
+            for symbol, details in snapshots.items():
+                if details["greeks"]["expire_date"] == selected_expiry:
+                    strike_price = float(details["strike_price"])
+                    if details["type"] == "call":
+                        calls[strike_price] = details
+                    else:
+                        puts[strike_price] = details
 
-            target_strike = get_nearest_strike(last_price)
+            sorted_strikes = sorted(calls.keys() | puts.keys())
 
-            target_contract = None
-            for c in contracts:
-                if c.get("type") == option_type_in.lower() and abs(float(c.get("strike_price")) - target_strike) < 0.1:
-                    target_contract = c
-                    break
+            print("STRIKE   |   CALL (BID/ASK)   |   PUT (BID/ASK)")
+            print("-------- | -------------------- | ------------------")
 
-            if not target_contract:
-                print(f"Could not find a {option_type_in} contract near strike {target_strike}.")
+            # Get a few strikes around the money
+            num_strikes_to_show = 5
+            try:
+                # Find the strike closest to the last stock price
+                closest_strike_index = min(range(len(sorted_strikes)), key=lambda i: abs(sorted_strikes[i] - last_price))
+                start_index = max(0, closest_strike_index - num_strikes_to_show)
+                end_index = min(len(sorted_strikes), closest_strike_index + num_strikes_to_show + 1)
+                strikes_to_display = sorted_strikes[start_index:end_index]
+            except (ValueError, IndexError):
+                # Fallback to just showing the first few if price is weird
+                strikes_to_display = sorted_strikes[:10]
+
+
+            for strike in strikes_to_display:
+                call_quote = calls.get(strike, {}).get("quote", {})
+                put_quote = puts.get(strike, {}).get("quote", {})
+
+                call_str = f"{call_quote.get('bp', 0):.2f}/{call_quote.get('ap', 0):.2f}".center(20)
+                put_str = f"{put_quote.get('bp', 0):.2f}/{put_quote.get('ap', 0):.2f}".center(18)
+
+                print(f"{strike:<8.2f} | {call_str} | {put_str}")
+
+            # 5. Prompt for action
+            action_input = input("\nACTION - (B/S C/P STRIKE PRICE [QTY], e.g., B C 550 1.25 5): ").upper().strip()
+            parts = action_input.split()
+            if len(parts) < 4 or len(parts) > 5:
+                print("Invalid action format. Use: B/S C/P STRIKE PRICE [QTY]")
                 continue
 
-            occ_symbol = target_contract["symbol"]
-            print(f"Selected contract: {occ_symbol}")
+            action, option_type_in, strike_str, price_str = parts[0], parts[1], parts[2], parts[3]
+            quantity = 1
+            if len(parts) == 5:
+                quantity = int(parts[4])
 
-            # 7. Validate price against live quote
-            live_quote = websocket_client.get_quote(occ_symbol)
-            if not live_quote:
-                print("Could not get a live quote for this contract. Cannot validate price.")
-                # Allow trade anyway? For now, we will stop.
+            strike_price = float(strike_str)
+            price = float(price_str)
+
+            # 6. Validate price against quote from snapshot
+            chain_for_type = calls if option_type_in == 'C' else puts
+            target_snapshot = chain_for_type.get(strike_price)
+
+            if not target_snapshot:
+                print("Invalid strike price selected.")
                 continue
 
-            market_bid = live_quote.get("bid")
-            market_ask = live_quote.get("ask")
+            live_quote = target_snapshot.get("quote", {})
+            market_bid = live_quote.get("bp", 0)
+            market_ask = live_quote.get("ap", 0)
+
+            if market_ask == 0 and action == 'B': # No liquidity, can't place a buy order
+                 print("No ask price available for this contract. Cannot place buy order.")
+                 continue
 
             if action == 'B' and price > market_ask:
                 print(f"Invalid price for buy order. Price ({price:.2f}) cannot be higher than ask ({market_ask:.2f}).")
@@ -471,6 +383,8 @@ def atrade1_main():
             if action == 'S' and price < market_bid:
                 print(f"Invalid price for sell order. Price ({price:.2f}) cannot be lower than bid ({market_bid:.2f}).")
                 continue
+
+            occ_symbol = create_occ_symbol(symbol_input, selected_expiry, option_type_in, strike_price)
 
             print("Price is valid.")
             place_and_monitor_order(client, occ_symbol, quantity, action, price)

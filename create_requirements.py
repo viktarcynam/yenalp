@@ -1,9 +1,7 @@
 def main():
     """Generates the requirements.txt file."""
     requirements = [
-        "requests",
-        "websocket-client",
-        "msgpack"
+        "requests"
     ]
     with open("requirements.txt", "w") as f:
         for req in requirements:
