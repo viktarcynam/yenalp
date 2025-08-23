@@ -117,6 +117,14 @@ class AlpacaClient:
     def get_option_chain(self, underlying_symbol):
         return self.get(f"/options/snapshots/{underlying_symbol}", base_url_override=self.data_v1beta1_url)
 
+    def get_open_orders(self, symbols=None):
+        params = {
+            "status": "open",
+            "symbols": symbols if symbols else None
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        return self.get("/orders", params=params)
+
 # Helper functions
 def parse_occ_symbol(symbol):
     """
@@ -180,6 +188,59 @@ def create_occ_symbol(underlying, expiry_date, option_type, strike):
 
     # Combine the parts
     return f"{underlying.upper()}{expiry}{opt_type}{strike_price_formatted}"
+
+def find_and_adopt_orphaned_order(client, symbol_input):
+    """Checks for existing open orders for a symbol and offers to adopt them."""
+    print("\nChecking for existing working orders...")
+    # We can't filter by underlying symbol directly, so we get all open orders
+    # and filter them locally. This is a limitation of the API.
+    # A better approach would be to get all option symbols for the underlying first,
+    # then pass that list to the `symbols` parameter. For now, this is simpler.
+    open_orders_response = client.get_open_orders()
+    if not open_orders_response.get("success"):
+        print("Could not retrieve open orders.")
+        return False # Indicate that we are not adopting an order
+
+    working_orders = [
+        order for order in open_orders_response.get("data", [])
+        if order.get("symbol", "").startswith(symbol_input.upper())
+    ]
+
+    if not working_orders:
+        print("No working orders found for this symbol.")
+        return False
+
+    orphaned_order = working_orders[0] # For simplicity, adopt the first one found
+    print("\n--- Orphaned Order Found! ---")
+    print(f"  ID: {orphaned_order['id']}")
+    print(f"  Symbol: {orphaned_order['symbol']}")
+    print(f"  Side: {orphaned_order['side']}, Qty: {orphaned_order['qty']}")
+    print(f"  Price: {orphaned_order['limit_price']}")
+    print(f"  Status: {orphaned_order['status']}")
+
+    adopt = input("Do you want to adopt and monitor this order? (y/n): ").lower()
+    if adopt == 'y':
+        position_intent = "close" if "close" in orphaned_order.get("position_intent", "") else "open"
+
+        order_to_monitor = {
+            "id": orphaned_order["id"],
+            "symbol": orphaned_order["symbol"],
+            "quantity": float(orphaned_order["qty"]),
+            "side": orphaned_order["side"],
+            "action": 'B' if orphaned_order["side"] == "buy" else 'S',
+            "price": float(orphaned_order["limit_price"])
+        }
+
+        status = poll_order_status(client, order_to_monitor)
+
+        if status == "FILLED" and position_intent == "open":
+            # After adopting and filling an opening leg, go into the closing workflow
+            place_and_monitor_order(client, order_to_monitor["symbol"], order_to_monitor["quantity"], 'S' if order_to_monitor['action'] == 'B' else 'B', 0, "close") # Price 0 is a placeholder
+
+        return True # Indicate we handled an adopted order
+
+    return False
+
 
 # Main application logic
 def poll_order_status(client, order_to_monitor):
@@ -436,7 +497,7 @@ def atrade1_main():
                 continue
             print(f"Last price for {symbol_input}: {last_price}")
 
-            # 3. Get positions
+            # 3. Get positions and check for orphaned orders
             positions_response = client.get_positions()
             if not positions_response.get("success"):
                 print(f"Error getting positions: {positions_response.get('error')}")
@@ -448,6 +509,9 @@ def atrade1_main():
                         print(f"  {pos.get('symbol')}: Qty: {pos.get('qty')}, Side: {pos.get('side')}")
                 else:
                     print(f"No positions found for {symbol_input}.")
+
+            if find_and_adopt_orphaned_order(client, symbol_input):
+                continue # If an order was adopted, restart the main loop
 
             # 4. Get option chain
             chain_response = client.get_option_chain(symbol_input)
