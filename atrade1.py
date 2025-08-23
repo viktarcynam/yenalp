@@ -7,6 +7,8 @@ import sys
 import select
 import termios
 import tty
+import os
+from dotenv import load_dotenv
 
 # Alpaca API client
 class AlpacaClient:
@@ -297,9 +299,14 @@ def atrade1_main():
     """Main function for the interactive Alpaca option client."""
     print("atrade1 : Alpaca Interactive Option Client")
 
-    # In a real application, you'd get these from a secure source
-    api_key = input("Enter your Alpaca API Key ID: ")
-    secret_key = input("Enter your Alpaca Secret Key: ")
+    load_dotenv()
+    api_key = os.getenv("APCA_API_KEY_ID")
+    secret_key = os.getenv("APCA_API_SECRET_KEY")
+
+    if not api_key or not secret_key:
+        print("\nAPI keys not found in .env file.")
+        api_key = input("Enter your Alpaca API Key ID: ")
+        secret_key = input("Enter your Alpaca Secret Key: ")
 
     client = AlpacaClient(api_key, secret_key)
 
