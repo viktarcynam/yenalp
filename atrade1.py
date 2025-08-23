@@ -385,18 +385,28 @@ def poll_order_status(client, order_to_monitor):
 
             # Get live quote for periodic display
             parsed_symbol = parse_occ_symbol(order_to_monitor['symbol'])
-            chain_response = client.get_option_chain(parsed_symbol['underlying'])
+            underlying = parsed_symbol['underlying']
+            strike = parsed_symbol['strike_price']
+
+            chain_response = client.get_option_chain(underlying)
             snapshots = chain_response.get("data", {}).get("snapshots", {})
-            live_quote = snapshots.get(order_to_monitor['symbol'], {}).get("latestQuote", {})
-            bid_price = live_quote.get('bp', 0)
-            ask_price = live_quote.get('ap', 0)
+
+            # Find call and put quotes for the same strike
+            call_symbol_to_find = create_occ_symbol(underlying, parsed_symbol['expiration_date'], 'C', strike)
+            put_symbol_to_find = create_occ_symbol(underlying, parsed_symbol['expiration_date'], 'P', strike)
+
+            call_quote = snapshots.get(call_symbol_to_find, {}).get("latestQuote", {})
+            put_quote = snapshots.get(put_symbol_to_find, {}).get("latestQuote", {})
+
+            order_type_str = parsed_symbol['type'].capitalize()
 
             display_line = (
-                f"\rStatus: {status.upper()} | "
-                f"Order: {order_to_monitor['action']} {order_to_monitor['quantity']} @ {order_to_monitor['price']:.2f} | "
-                f"Market: {bid_price:.2f} / {ask_price:.2f}"
+                f"\r{status.capitalize()}: {underlying} {order_to_monitor['side'].capitalize()} {order_to_monitor['quantity']} "
+                f"{order_type_str} {strike:.2f} @{order_to_monitor['price']:.2f}   "
+                f"CALL {call_quote.get('bp', 0):.2f} / {call_quote.get('ap', 0):.2f}   "
+                f"PUT {put_quote.get('bp', 0):.2f} / {put_quote.get('ap', 0):.2f}"
             )
-            print(display_line, end=" " * 10) # Padding to clear previous line
+            print(display_line, end="." * 5)
 
             if status == "filled":
                 print("\nOrder Filled!")
