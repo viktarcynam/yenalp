@@ -210,15 +210,33 @@ def find_and_adopt_orphaned_order(client, symbol_input):
         print("No working orders found for this symbol.")
         return False
 
-    orphaned_order = working_orders[0] # For simplicity, adopt the first one found
-    print("\n--- Orphaned Order Found! ---")
-    print(f"  ID: {orphaned_order['id']}")
-    print(f"  Symbol: {orphaned_order['symbol']}")
-    print(f"  Side: {orphaned_order['side']}, Qty: {orphaned_order['qty']}")
-    print(f"  Price: {orphaned_order['limit_price']}")
-    print(f"  Status: {orphaned_order['status']}")
+    orphaned_order = None
+    if len(working_orders) == 1:
+        orphaned_order = working_orders[0]
+        print("\n--- Orphaned Order Found! ---")
+        print(f"  ID: {orphaned_order['id']}")
+        print(f"  Symbol: {orphaned_order['symbol']}")
+        print(f"  Side: {orphaned_order['side']}, Qty: {orphaned_order['qty']}")
+        print(f"  Price: {orphaned_order['limit_price']}")
+        print(f"  Status: {orphaned_order['status']}")
+        adopt = input("Do you want to adopt and monitor this order? (y/n): ").lower()
+        if adopt != 'y':
+            return False # User chose not to adopt
+    else:
+        print("\n--- Multiple Orphaned Orders Found! ---")
+        for i, order in enumerate(working_orders):
+            print(f"  {i+1}. {order['symbol']} | {order['side']} {order['qty']} @ {order['limit_price']} | Status: {order['status']}")
 
-    adopt = input("Do you want to adopt and monitor this order? (y/n): ").lower()
+        try:
+            choice = int(input("Select an order to adopt (or 0 to skip): "))
+            if choice == 0:
+                return False
+            orphaned_order = working_orders[choice - 1]
+        except (ValueError, IndexError):
+            print("Invalid selection.")
+            return False
+
+    adopt = 'y' # Implicitly yes if they selected a number > 0
     if adopt == 'y':
         position_intent = "close" if "close" in orphaned_order.get("position_intent", "") else "open"
 
@@ -277,8 +295,17 @@ def poll_order_status(client, order_to_monitor):
                     non_replaceable_statuses = ['accepted', 'pending_new', 'pending_cancel', 'pending_replace', 'filled', 'canceled', 'expired', 'rejected']
 
                     if current_status in non_replaceable_statuses:
-                        # Implement streamlined Cancel-and-Replace
-                        print(f"\nOrder status is '{current_status}'. To adjust, will perform cancel-and-replace.")
+                        # --- Cancel-and-Replace Workflow ---
+                        print(f"\n--- Adjusting Order (Cancel-and-Replace) ---")
+                        print(f"  Order: {order_to_monitor['action']} {order_to_monitor['quantity']} {order_to_monitor['symbol']} @ {order_to_monitor['price']:.2f}")
+
+                        # Get and display live quote
+                        parsed_symbol = parse_occ_symbol(order_to_monitor['symbol'])
+                        chain_response = client.get_option_chain(parsed_symbol['underlying'])
+                        snapshots = chain_response.get("data", {}).get("snapshots", {})
+                        live_quote = snapshots.get(order_to_monitor['symbol'], {}).get("latestQuote", {})
+                        print(f"  Live Quote: Bid: {live_quote.get('bp', 0):.2f} / Ask: {live_quote.get('ap', 0):.2f}")
+
                         new_price_str = input("Enter new limit price (or 'q' to cancel adjustment): ").lower()
 
                         if new_price_str == 'q':
@@ -286,7 +313,7 @@ def poll_order_status(client, order_to_monitor):
                         else:
                             try:
                                 new_price = float(new_price_str)
-                                print("Canceling original order...")
+                                print("\nCanceling original order...")
                                 cancel_response = client.cancel_order(order_id)
                                 if not cancel_response.get("success"):
                                     print(f"Failed to cancel order: {cancel_response.get('error')}")
@@ -322,18 +349,32 @@ def poll_order_status(client, order_to_monitor):
                             except ValueError:
                                 print("Invalid price.")
                     else:
-                        # Standard Replace
-                        new_price_str = input("\nEnter new limit price: ")
-                        try:
-                            new_price = float(new_price_str)
-                            replace_response = client.replace_order(order_id, limit_price=new_price)
-                            if replace_response.get("success"):
-                                print("Order replaced successfully.")
-                                order_to_monitor["price"] = new_price
-                            else:
-                                print(f"Failed to replace order: {replace_response.get('error')}")
-                        except ValueError:
-                            print("Invalid price.")
+                        # --- Standard Replace Workflow ---
+                        print(f"\n--- Adjusting Order (Standard Replace) ---")
+                        print(f"  Order: {order_to_monitor['action']} {order_to_monitor['quantity']} {order_to_monitor['symbol']} @ {order_to_monitor['price']:.2f}")
+
+                        # Get and display live quote
+                        parsed_symbol = parse_occ_symbol(order_to_monitor['symbol'])
+                        chain_response = client.get_option_chain(parsed_symbol['underlying'])
+                        snapshots = chain_response.get("data", {}).get("snapshots", {})
+                        live_quote = snapshots.get(order_to_monitor['symbol'], {}).get("latestQuote", {})
+                        print(f"  Live Quote: Bid: {live_quote.get('bp', 0):.2f} / Ask: {live_quote.get('ap', 0):.2f}")
+
+                        new_price_str = input("Enter new limit price (or 'q' to cancel adjustment): ").lower()
+
+                        if new_price_str == 'q':
+                            print("Adjustment cancelled.")
+                        else:
+                            try:
+                                new_price = float(new_price_str)
+                                replace_response = client.replace_order(order_id, limit_price=new_price)
+                                if replace_response.get("success"):
+                                    print("Order replaced successfully.")
+                                    order_to_monitor["price"] = new_price
+                                else:
+                                    print(f"Failed to replace order: {replace_response.get('error')}")
+                            except ValueError:
+                                print("Invalid price.")
 
                     tty.setcbreak(sys.stdin.fileno()) # Go back to listening
 
