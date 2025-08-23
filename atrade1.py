@@ -368,7 +368,7 @@ def poll_order_status(client, order_to_monitor):
                                 if replace_response.get("success"):
                                     print("Order replaced successfully.")
                                     order_to_monitor["price"] = new_price
-                                start_time = time.time() # Reset timer
+                                    start_time = time.time() # Reset timer
                                 else:
                                     print(f"Failed to replace order: {replace_response.get('error')}")
                             except ValueError:
