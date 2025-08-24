@@ -259,7 +259,11 @@ def find_and_adopt_orphaned_order(client, symbol_input):
 def poll_order_status(client, order_to_monitor):
     """Polls an order's status and allows for adjustment or cancellation."""
     order_id = order_to_monitor["id"]
-    start_time = time.time()
+    if "original_start_time" not in order_to_monitor:
+        now = time.time()
+        order_to_monitor["original_start_time"] = now
+        order_to_monitor["last_interaction_time"] = now
+
     old_settings = termios.tcgetattr(sys.stdin)
     try:
         tty.setcbreak(sys.stdin.fileno())
@@ -339,7 +343,7 @@ def poll_order_status(client, order_to_monitor):
                                     order_id = new_order_id
                                     order_to_monitor["id"] = new_order_id
                                     order_to_monitor["price"] = new_price
-                                    start_time = time.time() # Reset timer
+                                    order_to_monitor["last_interaction_time"] = time.time()
                                 else:
                                     print(f"Failed to place new order: {new_order_response.get('error')}")
 
@@ -368,7 +372,7 @@ def poll_order_status(client, order_to_monitor):
                                 if replace_response.get("success"):
                                     print("Order replaced successfully.")
                                     order_to_monitor["price"] = new_price
-                                    start_time = time.time() # Reset timer
+                                    order_to_monitor["last_interaction_time"] = time.time()
                                 else:
                                     print(f"Failed to replace order: {replace_response.get('error')}")
                             except ValueError:
@@ -403,18 +407,25 @@ def poll_order_status(client, order_to_monitor):
 
                 order_type_str = parsed_symbol['type'].capitalize()
 
-                elapsed_seconds = int(time.time() - start_time)
-                mins, secs = divmod(elapsed_seconds, 60)
-                elapsed_str = f"{mins}m{secs}s" if mins > 0 else f"{secs}s"
+                # Calculate elapsed times
+                interaction_seconds = int(time.time() - order_to_monitor["last_interaction_time"])
+                total_seconds = int(time.time() - order_to_monitor["original_start_time"])
+
+                def format_time(s):
+                    mins, secs = divmod(s, 60)
+                    return f"{mins}m{secs}s" if mins > 0 else f"{secs}s"
+
+                interaction_str = format_time(interaction_seconds)
+                total_str = format_time(total_seconds)
 
                 display_line = (
-                    f"\r{status.capitalize()} {elapsed_str}: "
+                    f"\r{status.capitalize()} {interaction_str}:{total_str} : "
                     f"{underlying} {order_to_monitor['side'].capitalize()} {order_to_monitor['quantity']} "
                     f"{order_type_str} {strike:.2f} @{order_to_monitor['price']:.2f} | "
                     f"CALL: {call_quote.get('bp', 0):.2f} / {call_quote.get('ap', 0):.2f} | "
                     f"PUT: {put_quote.get('bp', 0):.2f} / {put_quote.get('ap', 0):.2f}"
                 )
-                print(display_line, end=" " * 15) # Padding to clear previous line
+                print(display_line, end=" " * 15)
             else:
                 print(f"\rStatus: {status.upper()}", end="")
 
@@ -453,13 +464,16 @@ def place_and_monitor_order(client, occ_symbol, quantity, action, price, positio
     order_id = order_response["data"].get("id")
     print(f"Order placed successfully. Order ID: {order_id}")
 
+    now = time.time()
     order_to_monitor = {
         "id": order_id,
         "symbol": occ_symbol,
         "quantity": quantity,
         "side": side,
         "action": action, # 'B' or 'S'
-        "price": price
+        "price": price,
+        "original_start_time": now,
+        "last_interaction_time": now
     }
 
     status = poll_order_status(client, order_to_monitor)
