@@ -370,7 +370,10 @@ def poll_order_status(client, order_to_monitor):
                                 new_price = float(new_price_str)
                                 replace_response = client.replace_order(order_id, limit_price=new_price)
                                 if replace_response.get("success"):
+                                    new_order_data = replace_response.get("data", {})
                                     print("Order replaced successfully.")
+                                    order_id = new_order_data.get("id", order_id)
+                                    order_to_monitor["id"] = order_id
                                     order_to_monitor["price"] = new_price
                                     order_to_monitor["last_interaction_time"] = time.time()
                                 else:
