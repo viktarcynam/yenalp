@@ -425,7 +425,7 @@ def poll_order_status(client, order_to_monitor):
                     f"CALL: {call_quote.get('bp', 0):.2f} / {call_quote.get('ap', 0):.2f} | "
                     f"PUT: {put_quote.get('bp', 0):.2f} / {put_quote.get('ap', 0):.2f}"
                 )
-                print(display_line, end=" " * 15)
+                print(display_line, end=" " * 15) # Padding to clear previous line
             else:
                 print(f"\rStatus: {status.upper()}", end="")
 
