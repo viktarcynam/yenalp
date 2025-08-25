@@ -559,7 +559,8 @@ def atrade1_main():
         api_key = input("Enter your Alpaca API Key ID: ")
         secret_key = input("Enter your Alpaca Secret Key: ")
 
-    client = AlpacaClient(api_key, secret_key)
+    is_paper = os.getenv("APCA_PAPER_TRADING", "true").lower() == "true"
+    client = AlpacaClient(api_key, secret_key, paper=is_paper)
 
     # 1. Verify connection by getting account info
     account_info = client.get_account()
