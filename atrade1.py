@@ -516,13 +516,13 @@ def place_and_monitor_order(client, occ_symbol, quantity, action, price, positio
                 print("Could not get latest chain for closing price. Aborting.")
                 return
 
-            snapshots = chain_response.get("data", {})
-            target_snapshot = snapshots.get(occ_symbol)
-            if not target_snapshot or not target_snapshot.get("latestQuote"):
+            snapshots = chain_response.get("data", {}).get("snapshots", {})
+            target_snapshot_data = snapshots.get(occ_symbol)
+            if not target_snapshot_data or not target_snapshot_data.get("latestQuote"):
                  print("Could not get latest quote for closing price. Aborting.")
                  return
 
-            closing_quote = target_snapshot["latestQuote"]
+            closing_quote = target_snapshot_data["latestQuote"]
             print(f"Latest quote for {occ_symbol}: Bid: {closing_quote.get('bp', 0):.2f}, Ask: {closing_quote.get('ap', 0):.2f}")
 
             try:
