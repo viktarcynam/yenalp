@@ -189,6 +189,18 @@ def create_occ_symbol(underlying, expiry_date, option_type, strike):
     # Combine the parts
     return f"{underlying.upper()}{expiry}{opt_type}{strike_price_formatted}"
 
+def check_for_working_close_order(client, symbol):
+    """Checks if a working closing order already exists for a given symbol."""
+    open_orders_response = client.get_open_orders(symbols=[symbol])
+    if not open_orders_response.get("success"):
+        return False # Assume no order if we can't check
+
+    for order in open_orders_response.get("data", []):
+        if order.get("symbol") == symbol and "close" in order.get("position_intent", ""):
+            print(f"\nFound existing closing order {order['id']} for {symbol}. Skipping new closing order.")
+            return True # Found an existing closing order
+    return False
+
 def find_and_adopt_orphaned_order(client, symbol_input):
     """Checks for existing open orders for a symbol and offers to adopt them."""
     print("\nChecking for existing working orders...")
@@ -370,7 +382,10 @@ def poll_order_status(client, order_to_monitor):
                                 new_price = float(new_price_str)
                                 replace_response = client.replace_order(order_id, limit_price=new_price)
                                 if replace_response.get("success"):
+                                    new_order_data = replace_response.get("data", {})
                                     print("Order replaced successfully.")
+                                    order_id = new_order_data.get("id", order_id)
+                                    order_to_monitor["id"] = order_id
                                     order_to_monitor["price"] = new_price
                                     order_to_monitor["last_interaction_time"] = time.time()
                                 else:
@@ -425,15 +440,15 @@ def poll_order_status(client, order_to_monitor):
                     f"CALL: {call_quote.get('bp', 0):.2f} / {call_quote.get('ap', 0):.2f} | "
                     f"PUT: {put_quote.get('bp', 0):.2f} / {put_quote.get('ap', 0):.2f}"
                 )
-                print(display_line, end=" " * 15)
+                print(display_line, end=" " * 15) # Padding to clear previous line
             else:
                 print(f"\rStatus: {status.upper()}", end="")
 
             if status == "filled":
                 print("\nOrder Filled!")
                 return "FILLED"
-            elif status in ["canceled", "expired", "rejected"]:
-                print(f"\nOrder is no longer active. Status: {status}")
+            elif status in ["canceled", "expired", "rejected", "replaced"]:
+                print(f"\nOrder is no longer active. Status: {status.upper()}")
                 return status.upper()
 
             time.sleep(3)
@@ -478,72 +493,52 @@ def place_and_monitor_order(client, occ_symbol, quantity, action, price, positio
 
     status = poll_order_status(client, order_to_monitor)
 
-    # --- Round-trip logic ---
-    if status == "FILLED" and position_intent == "open":
-        print("\n--- Place Closing Order ---")
+    # --- State Machine Logic ---
+    if status == "CANCELED":
+        print("\nOrder canceled. Returning to main menu.")
+        return
 
-        # We need the underlying symbol from the OCC symbol to get the chain
-        # Simple parsing: find the first digit
-        underlying_symbol = ""
-        for char in occ_symbol:
-            if char.isdigit():
-                break
-            underlying_symbol += char
-
-        chain_response = client.get_option_chain(underlying_symbol)
-        if not chain_response.get("success"):
-            print("Could not get latest chain to suggest a closing price. Aborting.")
+    if status == "FILLED":
+        if position_intent == "close":
+            print("\nClosing order filled. Trade complete.")
             return
 
-        snapshots = chain_response.get("data", {})
-        target_snapshot = snapshots.get(occ_symbol)
-        if not target_snapshot or not target_snapshot.get("quote"):
-             print("Could not get latest quote to suggest a closing price. Aborting.")
-             return
+        if position_intent == "open":
+            # Smart Close Logic
+            if check_for_working_close_order(client, occ_symbol):
+                return # Don't place another closing order
 
-        closing_quote = target_snapshot["quote"]
-        print(f"Latest quote for {occ_symbol}: Bid: {closing_quote['bp']:.2f}, Ask: {closing_quote['ap']:.2f}")
+            print("\n--- Place Closing Order ---")
 
-        try:
-            closing_price_str = input("Enter limit price for closing order (or 's' to skip): ")
-            if closing_price_str.lower() == 's':
-                print("Skipping closing order.")
+            underlying_symbol = parse_occ_symbol(occ_symbol)['underlying']
+            chain_response = client.get_option_chain(underlying_symbol)
+            if not chain_response.get("success"):
+                print("Could not get latest chain for closing price. Aborting.")
                 return
-            closing_price = float(closing_price_str)
-        except ValueError:
-            print("Invalid price. Aborting closing order.")
-            return
 
-        closing_action = 'S' if action == 'B' else 'B'
-        closing_side = "sell" if closing_action == 'S' else "buy"
+            snapshots = chain_response.get("data", {}).get("snapshots", {})
+            target_snapshot_data = snapshots.get(occ_symbol)
+            if not target_snapshot_data or not target_snapshot_data.get("latestQuote"):
+                 print("Could not get latest quote for closing price. Aborting.")
+                 return
 
-        print(f"\nPlacing closing order: {closing_action} {quantity} {occ_symbol} @ {closing_price:.2f}")
+            closing_quote = target_snapshot_data["latestQuote"]
+            print(f"Latest quote for {occ_symbol}: Bid: {closing_quote.get('bp', 0):.2f}, Ask: {closing_quote.get('ap', 0):.2f}")
 
-        closing_order_response = client.place_order(
-            symbol=occ_symbol,
-            qty=quantity,
-            side=closing_side,
-            order_type="limit",
-            time_in_force="day",
-            limit_price=closing_price
-        )
+            try:
+                closing_price_str = input("Enter limit price for closing order (or 's' to skip): ")
+                if closing_price_str.lower() == 's':
+                    print("Skipping closing order.")
+                    return
+                closing_price = float(closing_price_str)
+            except ValueError:
+                print("Invalid price. Aborting closing order.")
+                return
 
-        if not closing_order_response.get("success"):
-            print(f"Failed to place closing order: {closing_order_response.get('error')}")
-            return
+            closing_action = 'S' if action == 'B' else 'B'
 
-        closing_order_id = closing_order_response["data"].get("id")
-        print(f"Closing order placed successfully. Order ID: {closing_order_id}")
-
-        closing_order_to_monitor = {
-            "id": closing_order_id,
-            "symbol": occ_symbol,
-            "quantity": quantity,
-            "side": closing_side,
-            "action": closing_action,
-            "price": closing_price
-        }
-        poll_order_status(client, closing_order_to_monitor)
+            # Place and monitor the closing leg
+            place_and_monitor_order(client, occ_symbol, quantity, closing_action, closing_price, "close")
 
 
 def atrade1_main():
@@ -559,7 +554,8 @@ def atrade1_main():
         api_key = input("Enter your Alpaca API Key ID: ")
         secret_key = input("Enter your Alpaca Secret Key: ")
 
-    client = AlpacaClient(api_key, secret_key)
+    is_paper = os.getenv("APCA_PAPER_TRADING", "true").lower() == "true"
+    client = AlpacaClient(api_key, secret_key, paper=is_paper)
 
     # 1. Verify connection by getting account info
     account_info = client.get_account()
